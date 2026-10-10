@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>批量封面生成器</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=ZCOOL+QingKe+HuangYou&family=ZCOOL+KuaiLe&family=Noto+Sans+SC:wght@900&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  body{margin:0;font-family:"Microsoft YaHei",sans-serif;background:#f4f5fb;color:#222}
+  .wrap{display:flex;gap:20px;padding:20px;align-items:flex-start}
+  .side{width:340px;flex:none;background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 10px #0001;position:sticky;top:20px}
+  textarea{width:100%;box-sizing:border-box;height:240px;font-size:14px;padding:8px;border:1px solid #ccc;border-radius:8px}
+  label{display:flex;justify-content:space-between;align-items:center;margin:10px 0;font-size:14px}
+  .checks label{display:inline-flex;margin:0 12px 0 0;gap:4px}
+  .tip{font-size:12px;color:#777;line-height:1.6;background:#f7f7fb;padding:8px;border-radius:8px}
+  button{width:100%;padding:10px;margin-top:8px;border:0;border-radius:8px;background:#6c72e0;color:#fff;font-size:15px;cursor:pointer}
+  button.sec{background:#e8e9f8;color:#333}
+  .grid{flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}
+  .card{background:#fff;border-radius:10px;padding:8px;box-shadow:0 2px 8px #0001;font-size:12px}
+  .card canvas{width:100%;border-radius:6px;cursor:pointer;display:block}
+  .card .row{display:flex;gap:6px}
+  .card button{padding:6px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="side">
+    <h3 style="margin-top:0">批量封面生成器</h3>
+    <textarea id="txt">大学生[代做]
+ppt word excel
+
+论文[排版]
+格式调整 目录生成
+
+[PPT]美化
+汇报 答辩 课件
+
+Excel[表格]
+函数 图表 数据整理</textarea>
+    <div class="tip">
+      每张图之间<b>空一行</b>。第 1 行 = 大标题，<b>[ ]</b> 里的字会高亮；标题换行用 <b>|</b>。第 2 行起 = 副标题。<br>
+      插图、配色、排版、装饰全部随机生成。
+    </div>
+    <div style="margin:12px 0 4px;font-size:14px">插图类型</div>
+    <div class="checks">
+      <label><input type="checkbox" id="cAnimal" checked>动物</label>
+      <label><input type="checkbox" id="cPlant" checked>植物</label>
+      <label><input type="checkbox" id="cThing" checked>小物件</label>
+    </div>
+    <label>字体
+      <select id="font">
+        <option value="random">随机</option>
+        <option value="ZCOOL QingKe HuangYou">站酷黄油体</option>
+        <option value="ZCOOL KuaiLe">站酷快乐体</option>
+        <option value="Noto Sans SC">思源黑体 粗</option>
+        <option value="Microsoft YaHei">微软雅黑</option>
+      </select></label>
+    <button id="gen">生成预览</button>
+    <button class="sec" id="reroll">🎲 全部换一批</button>
+    <button id="zip">全部下载 (zip)</button>
+  </div>
+  <div class="grid" id="grid"></div>
+</div>
+<script>
+const W = 1176, H = 1568, INK = "#2b2b2b", LW = 1.8;
+const WEB_FONTS = ["ZCOOL QingKe HuangYou", "ZCOOL KuaiLe", "Noto Sans SC"];
+const $ = id => document.getElementById(id);
+
+/* ---------- 随机数（带种子，同一张图重绘结果不变） ---------- */
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+let R = Math.random;
+const rnd = (a = 0, b = 1) => a + R() * (b - a);
+const pick = arr => arr[Math.floor(R() * arr.length)];
+const chance = p => R() < p;
+const newSeed = () => Math.floor(Math.random() * 1e9);
+
+function shade(hex, amt) { // amt>0 变浅，<0 变深
+  const n = parseInt(hex.slice(1), 16), c = [n >> 16, n >> 8 & 255, n & 255];
+  return "#" + c.map(v => Math.round(amt > 0 ? v + (255 - v) * amt : v * (1 + amt)).toString(16).padStart(2, "0")).join("");
+}
+
+/* ---------- 画图工具 ---------- */
+let X; // 当前 canvas context
+const P = {
+  ell(x, y, rx, ry, r = 0) { const p = new Path2D(); p.ellipse(x, y, rx, ry, r, 0, Math.PI * 2); return p; },
+  circ(x, y, r) { return P.ell(x, y, r, r); },
+  rr(x, y, w, h, r) { const p = new Path2D(); p.roundRect(x, y, w, h, r); return p; },
+  poly(pts) { const p = new Path2D(); p.moveTo(...pts[0]); pts.slice(1).forEach(q => p.lineTo(...q)); p.closePath(); return p; },
+  heart(x, y, s) { const p = new Path2D(); p.moveTo(x, y + s * 0.9); p.bezierCurveTo(x - s * 1.5, y - s * 0.1, x - s * 0.7, y - s * 1.1, x, y - s * 0.4); p.bezierCurveTo(x + s * 0.7, y - s * 1.1, x + s * 1.5, y - s * 0.1, x, y + s * 0.9); return p; },
+  star(x, y, r) { const p = new Path2D(); for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; p.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); } p.closePath(); return p; },
+  sparkle(x, y, s) { const p = new Path2D(); p.moveTo(x, y - s); p.quadraticCurveTo(x, y, x + s, y); p.quadraticCurveTo(x, y, x, y + s); p.quadraticCurveTo(x, y, x - s, y); p.quadraticCurveTo(x, y, x, y - s); return p; },
+};
+// 贴纸风：先描粗黑边，再填色 —— 多个形状拼起来也不会有内部线条
+function blob(paths, fill) {
+  if (!Array.isArray(paths)) paths = [paths];
+  X.save(); X.lineWidth = LW * 2; X.strokeStyle = INK; paths.forEach(p => X.stroke(p)); X.restore();
+  X.fillStyle = fill; paths.forEach(p => X.fill(p));
+}
+function flat(paths, fill) { if (!Array.isArray(paths)) paths = [paths]; X.fillStyle = fill; paths.forEach(p => X.fill(p)); }
+function line(pts, w = LW * 0.8, color = INK) {
+  X.save(); X.lineWidth = w; X.strokeStyle = color; X.beginPath(); X.moveTo(...pts[0]);
+  pts.slice(1).forEach(q => q.length === 6 ? X.bezierCurveTo(...q) : q.length === 4 ? X.quadraticCurveTo(...q) : X.lineTo(...q));
+  X.stroke(); X.restore();
+}
+function arc(x, y, r, a0, a1, w = LW * 0.8) { X.save(); X.lineWidth = w; X.beginPath(); X.arc(x, y, r, a0 * Math.PI, a1 * Math.PI); X.stroke(); X.restore(); }
+
+/* ---------- 表情 ---------- */
+function face(x, y, s = 1, o = {}) {
+  const eye = o.eye || pick(["dot", "dot", "happy", "closed", "big"]);
+  const mouth = o.mouth || pick(["smile", "smile", "w", "o", "grin"]);
+  const dx = (o.gap || 11) * s;
+  for (const sx of [-1, 1]) {
+    const ex = x + sx * dx;
+    if (eye === "dot") { flat(P.circ(ex, y, 3.4 * s), INK); flat(P.circ(ex + 1.1 * s, y - 1.3 * s, 1.1 * s), "#fff"); }
+    else if (eye === "happy") arc(ex, y + 2 * s, 4 * s, 1.15, 1.85);
+    else if (eye === "closed") arc(ex, y - 2 * s, 4 * s, 0.15, 0.85);
+    else { flat(P.circ(ex, y, 5.2 * s), "#fff"); X.save(); X.lineWidth = LW * 0.6; X.stroke(P.circ(ex, y, 5.2 * s)); X.restore(); flat(P.circ(ex + 0.8 * s, y + 0.6 * s, 3.2 * s), INK); flat(P.circ(ex + 1.9 * s, y - 0.8 * s, 1.2 * s), "#fff"); }
+  }
+  X.globalAlpha = 0.6; flat([P.ell(x - dx - 5 * s, y + 7 * s, 5 * s, 3 * s), P.ell(x + dx + 5 * s, y + 7 * s, 5 * s, 3 * s)], "#ff8fa3"); X.globalAlpha = 1;
+  const my = y + 7 * s;
+  if (mouth === "smile") arc(x, my - 3 * s, 4 * s, 0.2, 0.8);
+  else if (mouth === "w") { X.save(); X.lineWidth = LW * 0.8; X.beginPath(); X.arc(x - 2.6 * s, my, 2.6 * s, Math.PI, 0, true); X.arc(x + 2.6 * s, my, 2.6 * s, Math.PI, 0, true); X.stroke(); X.restore(); }
+  else if (mouth === "o") { const p = P.ell(x, my + 1 * s, 2.6 * s, 3.2 * s); flat(p, "#d9534f"); X.save(); X.lineWidth = LW * 0.7; X.stroke(p); X.restore(); }
+  else if (mouth === "grin") { const p = new Path2D(); p.moveTo(x + 5 * s, my - 1 * s); p.arc(x, my - 1 * s, 5 * s, 0, Math.PI); p.closePath(); flat(p, "#d9534f"); X.save(); X.lineWidth = LW * 0.7; X.stroke(p); X.restore(); }
+}
+
+/* ---------- 小道具（动物抱在胸前） ---------- */
+const BRIGHT = ["#ff6b81", "#ffa94d", "#ffd43b", "#69db7c", "#4dabf7", "#9775fa", "#f783ac", "#38d9a9"];
+function prop() {
+  const t = pick(["book", "laptop", "heart", "flower", "cup", "pencil", "star"]);
+  if (t === "book") {
+    blob(P.poly([[-33, -12], [0, -8], [33, -12], [33, -41], [0, -37], [-33, -41]]), pick(BRIGHT));
+    blob([P.poly([[-29, -15], [0, -11], [0, -38], [-29, -42]]), P.poly([[29, -15], [0, -11], [0, -38], [29, -42]])], "#fff");
+    for (let i = 0; i < 3; i++) { line([[-24, -34 + i * 7], [-6, -31 + i * 7]], LW * 0.5); line([[24, -34 + i * 7], [6, -31 + i * 7]], LW * 0.5); }
+  } else if (t === "laptop") {
+    blob(P.rr(-28, -52, 56, 37, 5), pick(["#cfd8dc", "#e9ecef", "#b0bec5", "#ffc9de"]));
+    flat(P.heart(0, -34, 6), pick(BRIGHT));
+    blob(P.rr(-33, -17, 66, 7, 3), "#90a4ae");
+  } else if (t === "heart") {
+    blob(P.heart(0, -28, 20), "#ff6b81"); flat(P.ell(-9, -36, 4, 2.5, -0.6), "#fff");
+  } else if (t === "star") {
+    blob(P.star(0, -30, 22), "#ffd43b");
+  } else if (t === "flower") {
+    line([[0, -14], [0, -50]], LW * 1.2, "#2f9e44"); blob(P.ell(8, -30, 7, 3.5, -0.5), "#69db7c");
+    const c = pick(BRIGHT); blob([0, 1, 2, 3, 4].map(i => P.circ(Math.cos(i * 1.257) * 8, -56 + Math.sin(i * 1.257) * 8, 6.5)), c);
+    blob(P.circ(0, -56, 5), "#ffd43b");
+  } else if (t === "cup") {
+    const c = pick(BRIGHT);
+    X.save(); X.lineWidth = LW * 4; X.beginPath(); X.arc(17, -30, 7, -Math.PI / 2, Math.PI / 2); X.stroke(); X.lineWidth = LW * 2; X.strokeStyle = c; X.stroke(); X.restore();
+    blob(P.rr(-16, -45, 32, 32, 7), c);
+    line([[-5, -52], [-9, -58, -1, -62, -5, -68]], LW * 0.6); line([[5, -52], [1, -58, 9, -62, 5, -68]], LW * 0.6);
+  } else {
+    X.save(); X.translate(0, -30); X.rotate(-0.7);
+    blob(P.poly([[-6, -28], [6, -28], [0, -42]]), "#f5deb3"); flat(P.poly([[-2, -37], [2, -37], [0, -42]]), INK);
+    blob([P.rr(-6, -28, 12, 44, 1), P.rr(-6, 14, 12, 8, 2)], "#ffca28"); flat(P.rr(-6, 16, 12, 6, 2), "#ff8a80");
+    X.restore();
+  }
+}
+
+/* ---------- 头顶小配饰 ---------- */
+function accessory(top) {
+  const t = pick(["sprout", "bow", "hat", "none", "none"]);
+  if (t === "sprout") { line([[0, top + 2], [0, top - 12]], LW * 0.9); blob([P.ell(-7, top - 14, 7, 4, -0.5), P.ell(7, top - 14, 7, 4, 0.5)], "#69db7c"); }
+  else if (t === "bow") { const c = pick(["#ff6b81", "#f783ac", "#4dabf7", "#ffd43b"]); blob([P.poly([[18, top + 8], [6, top], [8, top + 16]]), P.poly([[18, top + 8], [30, top], [28, top + 16]])], c); blob(P.circ(18, top + 8, 3.5), c); }
+  else if (t === "hat") { const c = pick(BRIGHT); blob(P.poly([[-11, top + 5], [11, top + 5], [0, top - 24]]), c); blob(P.circ(0, top - 25, 4), "#fff"); }
+}
+
+/* ---------- 动物 ---------- */
+const FUR = {
+  cat: ["#f6b26b", "#d9d9d9", "#ffffff", "#a1887f", "#ffcc80", "#6b6b6b"],
+  bear: ["#a1887f", "#c69c6d", "#8d6e63", "#f2e3c6"],
+  rabbit: ["#ffffff", "#f3e5d8", "#d7ccc8", "#ffe0ec"],
+  dog: ["#f2d2a9", "#ffffff", "#d7a86e", "#e8d5c0"],
+  panda: ["#ffffff"], fox: ["#f4a259", "#f08c3a"], mouse: ["#cfd8dc", "#e0e0e0", "#d7ccc8"],
+  pig: ["#ffc4cf", "#ffb3c1"], koala: ["#b0bec5", "#cfd8dc"],
+};
+function arms(pose, limb) {
+  if (pose === "hold") { prop(); blob([P.ell(-23, -30, 8, 7), P.ell(23, -30, 8, 7)], limb); }
+  else if (pose === "wave") { blob([P.ell(-32, -29, 8, 13, 0.4), P.ell(37, -50, 8, 13, 0.6)], limb); arc(50, -64, 8, 1.6, 1.95, LW * 0.6); arc(50, -64, 14, 1.65, 1.9, LW * 0.6); }
+  else blob([P.ell(-32, -29, 8, 13, 0.4), P.ell(32, -29, 8, 13, -0.4)], limb);
+}
+function animal(kind) {
+  const fur = pick(FUR[kind]), inner = "#ffb7c5", dark = shade(fur, -0.3), hy = -70;
+  const limb = kind === "panda" ? "#3a3a3a" : fur;
+  if (kind === "cat") blob(P.ell(34, -24, 7, 20, 0.6), fur);
+  if (kind === "fox") { blob(P.ell(36, -24, 12, 24, 0.7), fur); flat(P.ell(47, -38, 6, 8, 0.7), "#fff"); }
+  if (kind === "mouse") line([[30, -10], [56, -10, 56, -40, 44, -46]], LW * 0.9);
+  if (kind === "rabbit") blob(P.circ(32, -14, 8), fur);
+  blob(P.ell(0, -28, 34, 27), fur);
+  if (kind !== "panda") flat(P.ell(0, -24, 19, 16), shade(fur, 0.6));
+  blob([P.ell(-17, -4, 10, 6), P.ell(17, -4, 10, 6)], limb);
+  // 耳朵（在头后面）
+  if (kind === "cat" || kind === "fox" || kind === "pig") {
+    const big = kind === "fox" ? 6 : kind === "pig" ? -6 : 0;
+    blob([P.poly([[-30, hy - 8], [-24 - big / 2, hy - 40 - big], [-6, hy - 24]]), P.poly([[30, hy - 8], [24 + big / 2, hy - 40 - big], [6, hy - 24]])], fur);
+    flat([P.poly([[-25, hy - 14], [-22, hy - 33 - big], [-12, hy - 22]]), P.poly([[25, hy - 14], [22, hy - 33 - big], [12, hy - 22]])], kind === "fox" ? "#fff" : inner);
+  } else if (kind === "rabbit") {
+    blob([P.ell(-12, hy - 44, 8, 24, -0.12), P.ell(12, hy - 44, 8, 24, 0.12)], fur);
+    flat([P.ell(-12, hy - 42, 4, 16, -0.12), P.ell(12, hy - 42, 4, 16, 0.12)], inner);
+  } else if (kind !== "dog") {
+    const r = kind === "koala" ? 15 : kind === "mouse" ? 16 : 10, c = kind === "panda" ? "#3a3a3a" : fur;
+    blob([P.circ(-25, hy - 22, r), P.circ(25, hy - 22, r)], c);
+    if (kind !== "panda") flat([P.circ(-25, hy - 22, r * 0.55), P.circ(25, hy - 22, r * 0.55)], kind === "koala" ? "#eceff1" : inner);
+  }
+  blob(P.ell(0, hy, 34, 28), fur);
+  if (kind === "dog") blob([P.ell(-32, hy + 2, 9, 18, 0.35), P.ell(32, hy + 2, 9, 18, -0.35)], pick(["#8d6e63", "#a1887f", "#6d4c41"]));
+  if (kind === "panda") flat([P.ell(-12, hy + 1, 7.5, 9.5, 0.5), P.ell(12, hy + 1, 7.5, 9.5, -0.5)], "#3a3a3a");
+  if (["bear", "dog", "fox"].includes(kind)) flat(P.ell(0, hy + 10, 12, 8.5), "#fff3e0");
+  face(0, hy + 1, 1, { eye: kind === "panda" ? "big" : undefined, mouth: kind === "pig" ? "smile" : undefined });
+  if (kind === "pig") { blob(P.ell(0, hy + 9, 8, 5.5), "#ff9fb2"); flat([P.circ(-3, hy + 9, 1.4), P.circ(3, hy + 9, 1.4)], INK); }
+  else if (kind === "koala") blob(P.ell(0, hy + 4, 5, 7), "#455a64");
+  else flat(P.ell(0, hy + 4, 3.5, 2.5), INK);
+  if (kind === "cat") for (const s of [-1, 1]) { line([[s * 21, hy + 5], [s * 34, hy + 2]], LW * 0.5); line([[s * 21, hy + 9], [s * 34, hy + 11]], LW * 0.5); }
+  if (kind === "cat" && chance(0.4)) for (const dx of [-6, 0, 6]) line([[dx, hy - 26], [dx, hy - 20]], LW * 0.8, dark);
+  arms(pick(["hold", "hold", "wave", "down"]), limb);
+  accessory(hy - 28);
+}
+function chick() {
+  const c = pick(["#ffe066", "#ffd43b", "#fff3bf"]);
+  line([[-12, -6], [-12, 0], [-18, 2]], LW, "#f08c00"); line([[12, -6], [12, 0], [18, 2]], LW, "#f08c00");
+  blob(P.ell(0, -42, 36, 40), c);
+  line([[0, -82], [-2, -92, -8, -92]], LW * 0.9); line([[0, -82], [3, -94, 9, -92]], LW * 0.9);
+  face(0, -52, 1, { mouth: "none" }); blob(P.poly([[-5, -46], [5, -46], [0, -39]]), "#ff922b");
+  if (chance(0.6)) { prop(); blob([P.ell(-23, -30, 7, 6), P.ell(23, -30, 7, 6)], c); }
+  else blob([P.ell(-35, -38, 7, 14, 0.5), P.ell(35, -38, 7, 14, -0.5)], c);
+  accessory(-82);
+}
+function penguin() {
+  blob([P.ell(-12, -3, 9, 5), P.ell(12, -3, 9, 5)], "#ff922b");
+  blob(P.ell(0, -44, 34, 44), pick(["#37474f", "#455a64", "#3b5bdb"]));
+  flat(P.ell(0, -38, 25, 34), "#fff");
+  face(0, -58, 1, { mouth: "none" }); blob(P.poly([[-5, -52], [5, -52], [0, -45]]), "#ff922b");
+  if (chance(0.5)) { prop(); blob([P.ell(-23, -30, 7, 6), P.ell(23, -30, 7, 6)], "#37474f"); }
+  else blob([P.ell(-34, -40, 7, 18, 0.3), P.ell(34, -40, 7, 18, -0.3)], "#37474f");
+  accessory(-88);
+}
+function frog() {
+  const c = pick(["#8bc34a", "#9ccc65", "#7cb342"]);
+  blob([P.ell(-18, -4, 11, 6), P.ell(18, -4, 11, 6)], c);
+  blob(P.ell(0, -26, 32, 24), c); flat(P.ell(0, -22, 18, 14), shade(c, 0.6));
+  blob([P.circ(-19, -80, 12), P.circ(19, -80, 12)], c);
+  blob(P.ell(0, -58, 38, 25), c);
+  flat([P.circ(-19, -80, 8), P.circ(19, -80, 8)], c);
+  for (const s of [-1, 1]) { flat(P.circ(s * 19, -80, 7), "#fff"); flat(P.circ(s * 19 + 1, -79, 4), INK); flat(P.circ(s * 19 + 2, -81, 1.4), "#fff"); }
+  arc(0, -64, 13, 0.15, 0.85);
+  X.globalAlpha = 0.6; flat([P.ell(-25, -55, 6, 3.5), P.ell(25, -55, 6, 3.5)], "#ff8fa3"); X.globalAlpha = 1;
+  arms(pick(["hold", "hold", "down"]), c);
+}
+
+/* ---------- 植物 ---------- */
+function pot(withFace) {
+  const c = pick(["#e07a5f", "#f2cc8f", "#81b29a", "#a5a5f5", "#ffffff", "#f4a6b6", "#74c0fc"]);
+  blob(P.poly([[-24, 0], [24, 0], [30, -32], [-30, -32]]), c);
+  blob(P.rr(-34, -42, 68, 12, 4), c);
+  if (withFace) face(0, -18, 0.8);
+}
+function cactus() {
+  const g = pick(["#7cb342", "#8bc34a", "#66bb6a", "#9ccc65"]);
+  const parts = [P.rr(-15, -112, 30, 82, 15)];
+  if (chance(0.85)) parts.push(P.rr(-36, -68, 24, 11, 5.5), P.rr(-36, -92, 11, 34, 5.5));
+  if (chance(0.85)) parts.push(P.rr(12, -78, 24, 11, 5.5), P.rr(25, -100, 11, 33, 5.5));
+  blob(parts, g);
+  for (const [x, y] of [[-8, -100], [7, -92], [-6, -60], [8, -52], [-30, -84], [30, -92]]) line([[x - 2, y], [x, y - 3], [x + 2, y]], LW * 0.5);
+  if (chance(0.6)) { const c = pick(["#ff6b81", "#f783ac", "#ffd43b"]); blob([0, 1, 2, 3, 4].map(i => P.circ(Math.cos(i * 1.257) * 6, -114 + Math.sin(i * 1.257) * 6, 5)), c); flat(P.circ(0, -114, 3.5), "#fff3bf"); }
+  const f = chance(0.6); if (f) face(0, -80, 0.75);
+  pot(!f && chance(0.6));
+}
+function leafy() {
+  const g = pick(["#40c057", "#51cf66", "#2f9e44", "#69db7c"]), n = 5 + Math.floor(rnd(0, 3));
+  const leaves = [];
+  for (let i = 0; i < n; i++) {
+    const a = -1.1 + 2.2 * i / (n - 1) + rnd(-0.1, 0.1), len = rnd(45, 65);
+    const x = Math.sin(a) * len, y = -40 - Math.cos(a) * len;
+    line([[0, -40], [x * 0.5, y + 10, x, y]], LW * 0.9, "#2b8a3e"); leaves.push([x, y, a]);
+  }
+  for (const [x, y, a] of leaves) { blob(P.ell(x, y, 11, 20, a), g); line([[x - Math.sin(a) * 14, y + Math.cos(a) * 14], [x + Math.sin(a) * 14, y - Math.cos(a) * 14]], LW * 0.5); }
+  pot(chance(0.6));
+}
+function flowers() {
+  const stems = [[-22, -95], [0, -112], [22, -92]];
+  for (const [x, y] of stems) line([[0, -40], [x * 0.3, (y - 40) / 2, x, y]], LW * 1.1, "#2f9e44");
+  blob([P.ell(-14, -60, 9, 4.5, 0.6), P.ell(14, -66, 9, 4.5, -0.6)], "#69db7c");
+  for (const [x, y] of stems) {
+    const c = pick(BRIGHT), tulip = chance(0.4);
+    if (tulip) blob(P.poly([[x - 10, y - 8], [x - 5, y + 2], [x, y - 6], [x + 5, y + 2], [x + 10, y - 8], [x + 9, y + 6], [x, y + 12], [x - 9, y + 6]]), c);
+    else { blob([0, 1, 2, 3, 4].map(i => P.circ(x + Math.cos(i * 1.257) * 9, y + Math.sin(i * 1.257) * 9, 7.5)), c); blob(P.circ(x, y, 5.5), "#ffd43b"); }
+  }
+  pot(chance(0.6));
+}
+function sunflower() {
+  blob(P.rr(-3, -88, 6, 60, 3), "#2f9e44");
+  blob([P.ell(-14, -56, 12, 5, 0.5), P.ell(14, -64, 12, 5, -0.5)], "#51cf66");
+  blob([...Array(12)].map((_, i) => P.ell(Math.cos(i * 0.5236) * 26, -100 + Math.sin(i * 0.5236) * 26, 11, 6, i * 0.5236)), "#ffd43b");
+  blob(P.circ(0, -100, 20), "#a0522d");
+  face(0, -102, 0.85, { eye: pick(["happy", "closed", "dot"]) });
+  pot(false);
+}
+function mushroom() {
+  const one = (x, s, c) => {
+    blob(P.rr(x - 13 * s, -44 * s, 26 * s, 44 * s, 10 * s), "#fff3e0");
+    const p = new Path2D(); p.ellipse(x, -42 * s, 40 * s, 34 * s, 0, Math.PI, 0); p.closePath(); blob(p, c);
+    flat([P.circ(x - 18 * s, -54 * s, 6 * s), P.circ(x + 6 * s, -66 * s, 7 * s), P.circ(x + 22 * s, -50 * s, 5 * s)], "#fff");
+    face(x, -22 * s, 0.7 * s);
+  };
+  const c = pick(["#ff6b6b", "#fa5252", "#f59f00", "#9775fa", "#e8590c"]);
+  if (chance(0.5)) one(38, 0.5, pick(["#ff6b6b", "#ffa94d", "#b197fc"]));
+  one(0, 1, c);
+}
+function tree() {
+  blob(P.rr(-9, -52, 18, 52, 4), "#a1887f");
+  const g = pick(["#51cf66", "#69db7c", "#40c057", "#94d82d"]);
+  blob([[0, -92, 30], [-26, -76, 22], [26, -76, 22], [-15, -108, 20], [15, -108, 20], [0, -66, 22]].map(([x, y, r]) => P.circ(x, y, r)), g);
+  const fruit = pick(["#ff6b6b", "#ffa94d", "#f783ac", null]);
+  if (fruit) for (const [x, y] of [[-28, -84], [24, -96], [-8, -116], [30, -70], [-18, -66]]) blob(P.circ(x, y, 4.5), fruit);
+  if (chance(0.6)) face(0, -86, 0.9);
+}
+/* ---------- 小物件 ---------- */
+function cloud() {
+  X.translate(0, -25);
+  if (chance(0.5)) { X.save(); ["#ff8787", "#ffd43b", "#69db7c", "#74c0fc"].forEach((c, i) => { X.lineWidth = 7; X.strokeStyle = c; X.beginPath(); X.arc(0, -10, 62 - i * 7, Math.PI, 0); X.stroke(); }); X.restore(); }
+  blob([P.circ(-26, -38, 22), P.circ(0, -54, 28), P.circ(28, -40, 22), P.rr(-46, -40, 92, 26, 13)], "#ffffff");
+  face(0, -38, 1);
+  if (chance(0.5)) for (const x of [-26, 0, 26]) blob(P.ell(x, 8 + (x === 0 ? 8 : 0), 3.5, 6), "#74c0fc");
+}
+function cup() {
+  const c = pick(BRIGHT);
+  X.save(); X.lineWidth = LW * 6; X.beginPath(); X.arc(30, -36, 14, -Math.PI / 2, Math.PI / 2); X.stroke(); X.lineWidth = LW * 3.6; X.strokeStyle = c; X.stroke(); X.restore();
+  blob(P.rr(-32, -74, 64, 74, 16), c);
+  if (chance(0.5)) flat(P.rr(-32, -20, 64, 8, 0), shade(c, 0.5));
+  face(0, -42, 1.1);
+  for (const x of [-12, 0, 12]) line([[x, -82], [x - 5, -90, x + 5, -96, x, -104]], LW * 0.7);
+}
+function fruit() {
+  const t = pick(["orange", "peach", "apple"]);
+  const c = { orange: "#ffa94d", peach: "#ffc9c9", apple: "#ff6b6b" }[t];
+  line([[0, -78], [2, -90]], LW * 1.1, "#795548");
+  blob(P.ell(14, -86, 12, 6, -0.4), "#69db7c");
+  blob(P.ell(0, -40, 40, 38), c);
+  flat(P.ell(-18, -56, 7, 4, -0.6), "#ffffff88");
+  face(0, -38, 1);
+}
+
+const KINDS = {
+  animal: [...Object.keys(FUR).map(k => () => animal(k)), chick, penguin, frog],
+  plant: [cactus, leafy, flowers, sunflower, mushroom, tree],
+  thing: [cloud, cup, fruit],
+};
+
+/* ---------- 版式 ---------- */
+const PALETTES = [
+  ["#eff1fd", "#c8ccf6"], ["#fdf3e7", "#ffd59e"], ["#eefaf1", "#b9ecc8"], ["#fdeff3", "#ffc4d3"],
+  ["#fffbe6", "#ffe98a"], ["#eaf6fd", "#b6e0fb"], ["#f5effd", "#dccbfb"], ["#f3f1ea", "#e3d5b8"],
+];
+function parse(text) {
+  return text.replace(/\r/g, "").split(/\n\s*\n/).map(b => b.split("\n").map(s => s.trim()).filter(Boolean)).filter(b => b.length);
+}
+function segs(line) {
+  const out = []; const re = /\[([^\]]*)\]|([^\[]+)/g; let m;
+  while ((m = re.exec(line))) out.push(m[1] !== undefined ? { t: m[1], h: true } : { t: m[2], h: false });
+  return out;
+}
+const widthOf = (parts, sp) => parts.reduce((w, p) => w + X.measureText(p.t).width + sp * [...p.t].length, 0) - sp;
+function drawSpaced(text, x, y, sp) { for (const ch of text) { X.fillText(ch, x, y); x += X.measureText(ch).width + sp; } return x; }
+function roughRect(x, y, w, h, r) {
+  X.beginPath();
+  X.moveTo(x + r, y + 2); X.lineTo(x + w - r, y - 1); X.quadraticCurveTo(x + w + 2, y, x + w, y + r);
+  X.lineTo(x + w + 3, y + h - r); X.quadraticCurveTo(x + w, y + h + 2, x + w - r, y + h);
+  X.lineTo(x + r, y + h + 3); X.quadraticCurveTo(x - 2, y + h, x, y + h - r);
+  X.lineTo(x - 3, y + r); X.quadraticCurveTo(x, y, x + r, y + 2); X.fill();
+}
+function decoration(x, y, s, c) {
+  X.save(); X.fillStyle = c; X.strokeStyle = c; X.lineWidth = s * 0.25; X.lineCap = "round";
+  const t = pick(["sparkle", "sparkle", "dot", "heart", "ring", "squiggle", "plus", "star"]);
+  if (t === "sparkle") X.fill(P.sparkle(x, y, s));
+  else if (t === "dot") X.fill(P.circ(x, y, s * 0.35));
+  else if (t === "heart") X.fill(P.heart(x, y, s * 0.6));
+  else if (t === "star") X.fill(P.star(x, y, s * 0.7));
+  else if (t === "ring") X.stroke(P.circ(x, y, s * 0.5));
+  else if (t === "plus") { X.beginPath(); X.moveTo(x - s * 0.5, y); X.lineTo(x + s * 0.5, y); X.moveTo(x, y - s * 0.5); X.lineTo(x, y + s * 0.5); X.stroke(); }
+  else { X.beginPath(); X.moveTo(x - s, y); for (let i = 1; i <= 4; i++) X.quadraticCurveTo(x - s + (i - 0.5) * s / 2, y + (i % 2 ? -1 : 1) * s * 0.4, x - s + i * s / 2, y); X.stroke(); }
+  X.restore();
+}
+
+function render(block, seed) {
+  R = mulberry32(seed);
+  const c = document.createElement("canvas"); c.width = W; c.height = H; X = c.getContext("2d");
+  const [bg, hl] = pick(PALETTES), accent = shade(hl, -0.25);
+  const font = $("font").value === "random" ? pick(WEB_FONTS) : $("font").value;
+  const align = pick(["left", "left", "center"]), hlStyle = pick(["box", "box", "marker", "circle"]);
+
+  // 背景
+  X.fillStyle = bg; X.fillRect(0, 0, W, H);
+  const pattern = pick(["plain", "plain", "dots", "grid"]);
+  if (pattern === "dots") { X.fillStyle = shade(bg, -0.07); for (let y = 30; y < H; y += 52) for (let x = 30; x < W; x += 52) X.fill(P.circ(x, y, 3)); }
+  if (pattern === "grid") { X.strokeStyle = shade(bg, -0.05); X.lineWidth = 2; X.beginPath(); for (let x = 0; x < W; x += 60) { X.moveTo(x, 0); X.lineTo(x, H); } for (let y = 0; y < H; y += 60) { X.moveTo(0, y); X.lineTo(W, y); } X.stroke(); }
+
+  // 文字
+  const fg = "#2b2b2b", left = 110, maxW = W - 220;
+  const titleLines = block[0].split("|").map(segs);
+  let size = 150, sp = 14;
+  X.font = `900 ${size}px "${font}"`;
+  while (size > 60 && Math.max(...titleLines.map(l => widthOf(l, sp))) > maxW) { size -= 4; sp = size * 0.09; X.font = `900 ${size}px "${font}"`; }
+  let y = rnd(300, 400);
+  for (const parts of titleLines) {
+    let x = align === "center" ? (W - widthOf(parts, sp)) / 2 : left;
+    for (const p of parts) {
+      const w = widthOf([p], sp);
+      if (p.h) {
+        X.fillStyle = hl;
+        if (hlStyle === "box") roughRect(x - 14, y - size * 0.95, w + 28, size * 1.18, 18);
+        else if (hlStyle === "marker") roughRect(x - 8, y - size * 0.42, w + 16, size * 0.5, 10);
+        else { X.save(); X.strokeStyle = accent; X.lineWidth = 9; X.beginPath(); X.ellipse(x + w / 2, y - size * 0.36, w / 2 + 34, size * 0.72, -0.04, 0.2, Math.PI * 2.1); X.stroke(); X.restore(); }
+      }
+      X.fillStyle = fg; x = drawSpaced(p.t, x, y, sp);
+    }
+    y += size * 1.25;
+  }
+  y += 50;
+  for (const ln of block.slice(1)) {
+    let s = 100; X.font = `900 ${s}px "${font}"`;
+    while (s > 40 && widthOf([{ t: ln }], 8) > maxW) { s -= 4; X.font = `900 ${s}px "${font}"`; }
+    X.fillStyle = fg; drawSpaced(ln, align === "center" ? (W - widthOf([{ t: ln }], 8)) / 2 : left, y, 8);
+    y += s * 1.3;
+  }
+  const textBottom = y - 40;
+
+  // 插图位置
+  const bottom = H - rnd(70, 150);
+  const k = Math.min(rnd(5.2, 6.8), (bottom - textBottom - 40) / 118);
+  const cx = align === "center" ? W / 2 : pick([W / 2, W / 2, W * 0.62]);
+  const box = { l: cx - 65 * k, r: cx + 65 * k, t: bottom - 125 * k, b: bottom };
+  if (chance(0.5)) { X.fillStyle = shade(bg, 0.6); X.fill(P.ell(cx, bottom - 55 * k, 78 * k, 66 * k)); }
+
+  // 装饰
+  const decoColors = [accent, hl, pick(BRIGHT)];
+  let placed = 0;
+  for (let tries = 0; tries < 200 && placed < 6; tries++) {
+    const dx = rnd(70, W - 70), dy = rnd(textBottom + 30, H - 70);
+    if (dx > box.l - 20 && dx < box.r + 20 && dy > box.t - 20) continue;
+    decoration(dx, dy, rnd(22, 40), pick(decoColors)); placed++;
+  }
+
+  // 插图
+  const cats = [["animal", $("cAnimal").checked], ["plant", $("cPlant").checked], ["thing", $("cThing").checked]].filter(x => x[1]).map(x => x[0]);
+  const draw = pick(KINDS[pick(cats.length ? cats : ["animal"])]);
+  X.save(); X.translate(cx, bottom); X.scale(k, k);
+  X.lineCap = "round"; X.lineJoin = "round"; X.strokeStyle = INK; X.lineWidth = LW;
+  X.fillStyle = "rgba(0,0,0,0.07)"; X.fill(P.ell(0, 0, 50, 5));
+  draw();
+  X.restore();
+  return c;
+}
+
+/* ---------- 页面逻辑 ---------- */
+let seeds = [], cards = [];
+async function generate() {
+  const blocks = parse($("txt").value);
+  while (seeds.length < blocks.length) seeds.push(newSeed());
+  const allText = $("txt").value.replace(/[\[\]|\s]/g, "");
+  try { await Promise.all(WEB_FONTS.map(f => document.fonts.load(`900 100px "${f}"`, allText))); } catch (e) {}
+  const grid = $("grid"); grid.innerHTML = ""; cards = [];
+  blocks.forEach((block, i) => {
+    const name = `${String(i + 1).padStart(2, "0")}_${block[0].replace(/[\[\]|\\/:*?"<>]/g, "")}.png`;
+    const card = document.createElement("div"); card.className = "card";
+    const item = { block, name, c: null, card };
+    const paint = () => { const c = render(block, seeds[i]); c.title = "点击下载这张"; c.onclick = () => downloadOne(item); if (item.c) item.c.replaceWith(c); else card.prepend(c); item.c = c; };
+    paint();
+    const row = document.createElement("div"); row.className = "row";
+    const re = document.createElement("button"); re.className = "sec"; re.textContent = "🎲 换一张"; re.onclick = () => { seeds[i] = newSeed(); paint(); };
+    const dl = document.createElement("button"); dl.textContent = "下载"; dl.onclick = () => downloadOne(item);
+    row.append(re, dl); card.append(row); grid.append(card); cards.push(item);
+  });
+}
+function downloadOne({ c, name }) { const a = document.createElement("a"); a.download = name; a.href = c.toDataURL("image/png"); a.click(); }
+async function downloadZip() {
+  if (!cards.length) await generate();
+  if (typeof JSZip === "undefined") { for (const x of cards) { downloadOne(x); await new Promise(r => setTimeout(r, 400)); } return; }
+  const zip = new JSZip();
+  for (const { c, name } of cards) zip.file(name, c.toDataURL("image/png").split(",")[1], { base64: true });
+  const blob = await zip.generateAsync({ type: "blob" });
+  const a = document.createElement("a"); a.download = "封面图.zip"; a.href = URL.createObjectURL(blob); a.click();
+}
+$("gen").onclick = generate;
+$("reroll").onclick = () => { seeds = []; generate(); };
+$("zip").onclick = downloadZip;
+["font", "cAnimal", "cPlant", "cThing"].forEach(id => $(id).addEventListener("change", generate));
+let timer; $("txt").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(generate, 600); });
+window.addEventListener("load", generate);
+</script>
+</body>
+</html>
